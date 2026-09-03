@@ -2,16 +2,34 @@
 -- Marksmanship Rotation Helper - Rotation.lua
 -- Shot-priority PvE rotation for Marksmanship Hunters.
 --
--- TBC mechanics this priority relies on:
---   * Auto Shot fires on its own timer with no player action needed;
---     this addon never tries to model or avoid clipping it, since that
---     is not a well-established mechanic worth asserting without being
---     able to test it live.
---   * Serpent Sting is a real DoT with a live-readable expiration, so
---     maintenance works exactly like a duration-based debuff refresh.
---   * Steady Shot and Aimed Shot have a cast time and require standing
---     still; Arcane Shot and Multi-Shot are instant and usable while
---     moving. This addon downranks the two cast-time shots while moving.
+-- TBC mechanics this priority relies on, verified against Wowhead,
+-- Icy Veins, and Warcraft Tavern's TBC Hunter guides before writing
+-- this file:
+--   * Auto Shot fires on its own timer, exactly like a melee swing.
+--     Steady Shot has a real cast time, so it must be timed to finish
+--     before the next Auto Shot is due, or it delays ("clips") that
+--     Auto Shot and costs real damage. This is described as the single
+--     most important Hunter DPS skill in TBC, so this addon tracks the
+--     Auto Shot timer (see Core.lua) and checks it before recommending
+--     Steady Shot, the same way the companion Warrior addon protects
+--     its post-swing Slam window.
+--   * Multi-Shot deals slightly more damage per cast than Steady Shot,
+--     so it takes priority whenever it is off cooldown - in both
+--     single-target and AoE, per every guide checked. Arcane Shot is
+--     the next-best "replace a Steady Shot" option.
+--   * Aimed Shot's long cast time makes it a pre-pull-only tool in the
+--     standard rotation, not something to weave in mid-fight - doing so
+--     would badly disrupt the Auto Shot timing above.
+--   * Serpent Sting is not a debuff worth interrupting the shot
+--     priority to maintain; it is simply a safe instant to use (while
+--     moving, or when nothing else is ready) if it currently is not
+--     already active.
+--   * Steady Shot and Aimed Shot both require standing still; Arcane
+--     Shot, Multi-Shot, and Serpent Sting are instant and usable while
+--     moving.
+--   * Kill Command is intentionally out of scope: it comes from the
+--     Beast Mastery talent tree and needs an active pet, neither of
+--     which fit a Marksmanship-focused advisor.
 -- ============================================================
 
 local ADDON_NAME, ns = ...
@@ -49,6 +67,20 @@ local function CooldownRemaining(key)
     return ns.GetAbilityCooldownRemaining(key, true)
 end
 
+local function GCDRemaining()
+    if evaluationContext and evaluationContext.gcdRemaining ~= nil then
+        return evaluationContext.gcdRemaining
+    end
+    return ns.GetGCDRemaining()
+end
+
+local function SwingRemaining()
+    if evaluationContext and evaluationContext.swingRemaining ~= nil then
+        return evaluationContext.swingRemaining
+    end
+    return ns.GetRangedSwingRemaining()
+end
+
 local function Knows(key)
     if evaluationContext and evaluationContext.known then
         return evaluationContext.known[key] == true
@@ -81,48 +113,71 @@ local function Decision(key, reason)
     return { ability = key, reason = reason or "" }
 end
 
--- ------------------------------------------------------------
--- Serpent Sting maintenance
--- ------------------------------------------------------------
-
-local function ShouldMaintainSerpentSting()
-    if not Settings().maintainSerpentSting then return nil end
-    if not Knows("SERPENT_STING") then return nil end
-    if not State().targetAttackable then return nil end
-    if State().targetTTD < ns.CONFIG.SERPENT_STING_MIN_TTD then return nil end
-
-    local expiration = State().serpentStingExpiration or 0
-    if expiration > 0 and expiration - Now() > ns.CONFIG.SERPENT_STING_REFRESH_AT then
-        return nil
-    end
-
-    if not TargetAbilityAvailable("SERPENT_STING") then return nil end
-    return "SERPENT_STING"
+local function WaitDecision(reason)
+    return { kind = "autoshot", reason = reason or "Wait for the next Auto Shot" }
 end
 
 -- ------------------------------------------------------------
 -- Core shots
 -- ------------------------------------------------------------
 
-local function CanArcaneShot()
-    return TargetAbilityAvailable("ARCANE_SHOT")
-end
-
 local function CanMultiShot()
     return TargetAbilityAvailable("MULTI_SHOT")
 end
 
--- Aimed Shot and Steady Shot both have a cast time and require standing
--- still; casting one while moving simply fails, so they are skipped
--- entirely while moving rather than recommended and missed.
-local function CanAimedShot()
-    if State().moving then return false end
-    return TargetAbilityAvailable("AIMED_SHOT")
+local function CanArcaneShot()
+    return TargetAbilityAvailable("ARCANE_SHOT")
 end
 
+-- Steady Shot's cast time, in seconds. The simulator (and the headless
+-- self-check, which never loads Core.lua at all) supplies this directly;
+-- live play reads it from the actual game so haste is always accounted
+-- for automatically.
+local function SteadyShotCastTime()
+    if evaluationContext and evaluationContext.steadyShotCastTime ~= nil then
+        return evaluationContext.steadyShotCastTime
+    end
+    return (ns.GetAbilityCastTimeMS("STEADY_SHOT") or 0) / 1000
+end
+
+-- Steady Shot has a real cast time. Starting it only makes sense if it
+-- will finish at or before the next Auto Shot is due - otherwise it
+-- delays that Auto Shot and costs more damage than it gains.
+local function SteadyShotWouldClip()
+    local castTime = SteadyShotCastTime()
+    if castTime <= 0 then return false end
+    if (State().rangedSpeed or 0) <= 0 or (State().nextAutoShotAt or 0) <= 0 then
+        -- No Auto Shot timer established yet (e.g. very start of the
+        -- pull) - nothing to clip, so Steady Shot is always safe.
+        return false
+    end
+    local finishesIn = GCDRemaining() + castTime
+    return finishesIn - SwingRemaining() > ns.CONFIG.STEADY_SHOT_CLIP_TOLERANCE
+end
+
+-- Steady Shot and Aimed Shot both have a cast time and require standing
+-- still; casting one while moving simply fails, so they are skipped
+-- entirely while moving rather than recommended and missed.
 local function CanSteadyShot()
     if State().moving then return false end
-    return TargetAbilityAvailable("STEADY_SHOT")
+    if not TargetAbilityAvailable("STEADY_SHOT") then return false end
+    return not SteadyShotWouldClip()
+end
+
+-- Serpent Sting is a safe instant filler, not a debuff to interrupt the
+-- shot priority for. Only offer it while it is not already active.
+local function CanUseSerpentSting()
+    if not Settings().maintainSerpentSting then return false end
+    if State().targetTTD < ns.CONFIG.SERPENT_STING_MIN_TTD then return false end
+    local expiration = State().serpentStingExpiration or 0
+    if expiration > Now() then return false end
+    return TargetAbilityAvailable("SERPENT_STING")
+end
+
+-- Aimed Shot's cast time is too long to weave into the Auto Shot timing
+-- mid-fight; the standard rotation only uses it before the pull.
+local function CanPrecombatAimedShot()
+    return TargetAbilityAvailable("AIMED_SHOT")
 end
 
 local function GetTargetMode()
@@ -135,70 +190,57 @@ local function GetTargetMode()
     return count >= ns.CONFIG.AOE_ENEMY_THRESHOLD, count
 end
 
-local function SingleTargetDecision()
-    local sting = ShouldMaintainSerpentSting()
-    if sting then
-        return Decision(sting, "Maintain your Serpent Sting")
+-- Multi-Shot and Arcane Shot outrank Steady Shot whenever they are
+-- ready, in both single-target and AoE alike - every guide checked
+-- agrees Multi-Shot's per-cast damage beats Steady Shot's regardless of
+-- target count, so there is no separate AoE-only reordering needed.
+local function CoreShotDecision()
+    if CanMultiShot() then
+        return Decision("MULTI_SHOT", "Replace a Steady Shot - it hits harder")
     end
 
     if CanArcaneShot() then
-        return Decision("ARCANE_SHOT", "Arcane Shot is ready")
-    end
-
-    if CanAimedShot() then
-        return Decision("AIMED_SHOT", "Aimed Shot is ready")
-    end
-
-    if CanMultiShot() then
-        return Decision("MULTI_SHOT", "Multi-Shot is ready")
+        return Decision("ARCANE_SHOT", "Replace a Steady Shot while it's on cooldown")
     end
 
     if CanSteadyShot() then
-        return Decision("STEADY_SHOT", "Filler between cooldowns")
+        return Decision("STEADY_SHOT", "Weave in after your last Auto Shot")
+    end
+
+    if CanUseSerpentSting() then
+        return Decision("SERPENT_STING", "Safe instant filler")
     end
 
     return nil
 end
 
-local function AoeDecision()
-    local sting = ShouldMaintainSerpentSting()
-    if sting then
-        return Decision(sting, "Maintain your Serpent Sting")
+local function PrecombatDecision()
+    if CanPrecombatAimedShot() then
+        return Decision("AIMED_SHOT", "Pre-cast before the pull - too slow to weave in combat")
     end
-
-    if CanMultiShot() then
-        return Decision("MULTI_SHOT", "Core multi-target damage")
-    end
-
-    if CanArcaneShot() then
-        return Decision("ARCANE_SHOT", "Arcane Shot is ready")
-    end
-
-    if CanAimedShot() then
-        return Decision("AIMED_SHOT", "Aimed Shot is ready")
-    end
-
-    if CanSteadyShot() then
-        return Decision("STEADY_SHOT", "Filler between cooldowns")
-    end
-
     return nil
 end
 
 local function EvaluateSnapshot()
     local aoeActive, enemyCount = GetTargetMode()
     local decision
+    local wait
 
-    if State().targetAttackable then
-        if aoeActive then
-            decision = AoeDecision()
-        else
-            decision = SingleTargetDecision()
+    if not State().inCombat then
+        decision = PrecombatDecision()
+    end
+
+    if not decision and State().targetAttackable then
+        decision = CoreShotDecision()
+        if not decision then
+            -- Nothing safe to cast without risking the next Auto Shot.
+            wait = WaitDecision("Protecting your next Auto Shot from being clipped")
         end
     end
 
     return {
         main = decision,
+        wait = wait,
         aoeActive = aoeActive,
         enemyCount = enemyCount,
     }
@@ -218,6 +260,10 @@ end
 function ns.Rotation_GetNextAbility()
     local snapshot = ns.Rotation_GetSnapshot()
     local main = snapshot.main
-    if not main then return nil, "No action needed - auto shot continues", nil end
+    if not main then
+        return nil,
+            snapshot.wait and snapshot.wait.reason or "No action needed - auto shot continues",
+            nil
+    end
     return main.ability, main.reason, nil
 end

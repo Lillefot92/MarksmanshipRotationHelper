@@ -28,149 +28,177 @@ local FULL_KNOWN = {
 }
 
 local SCENARIO_ORDER = {
-    "sting",
     "core",
+    "clip",
     "moving",
+    "precombat",
     "aoe",
 }
 
 local SCENARIO_LABELS = {
-    sting = "Serpent Sting maintenance",
-    core = "Arcane / Aimed / Multi-Shot priority",
+    core = "Multi-Shot / Arcane Shot / Steady Shot priority",
+    clip = "Steady Shot clip avoidance",
     moving = "Moving gates cast-time shots",
-    aoe = "AoE / Multi-Shot priority",
+    precombat = "Aimed Shot is pre-pull only",
+    aoe = "AoE mode keeps the same priority",
     all = "Complete suite",
 }
 
 local scenarios = {
-    sting = {
-        {
-            label = "No Serpent Sting on target: apply it first",
-            state = { serpentStingExpiration = false },
-            cooldowns = { SERPENT_STING = 0, ARCANE_SHOT = 0 },
-            expectedMain = "SERPENT_STING",
-        },
-        {
-            label = "Serpent Sting about to expire: refresh proactively",
-            stingExpiresIn = 2,
-            cooldowns = { SERPENT_STING = 0, ARCANE_SHOT = 0 },
-            expectedMain = "SERPENT_STING",
-        },
-        {
-            label = "Serpent Sting has plenty of time left: use Arcane Shot",
-            stingExpiresIn = 15,
-            cooldowns = { SERPENT_STING = 0, ARCANE_SHOT = 0 },
-            expectedMain = "ARCANE_SHOT",
-        },
-        {
-            label = "Skipped on a target about to die anyway",
-            state = { targetTTD = 3, serpentStingExpiration = false },
-            cooldowns = { SERPENT_STING = 0, ARCANE_SHOT = 4 },
-            expectedMain = nil,
-        },
-        {
-            label = "Disabled via settings: never recommended",
-            state = { serpentStingExpiration = false },
-            cooldowns = {
-                SERPENT_STING = 0,
-                ARCANE_SHOT = 4,
-                AIMED_SHOT = 4,
-                MULTI_SHOT = 4,
-                STEADY_SHOT = 0,
-            },
-            maintainSerpentSting = false,
-            expectedMain = "STEADY_SHOT",
-        },
-    },
     core = {
         {
-            label = "Arcane Shot outranks Aimed Shot and Multi-Shot",
-            cooldowns = { ARCANE_SHOT = 0, AIMED_SHOT = 0, MULTI_SHOT = 0 },
-            expectedMain = "ARCANE_SHOT",
-        },
-        {
-            label = "Aimed Shot fills when Arcane Shot is down",
-            cooldowns = { ARCANE_SHOT = 4, AIMED_SHOT = 0, MULTI_SHOT = 0 },
-            expectedMain = "AIMED_SHOT",
-        },
-        {
-            label = "Multi-Shot fills when Arcane and Aimed are down",
-            cooldowns = { ARCANE_SHOT = 4, AIMED_SHOT = 4, MULTI_SHOT = 0 },
+            label = "Multi-Shot outranks Arcane Shot and Steady Shot",
+            cooldowns = { MULTI_SHOT = 0, ARCANE_SHOT = 0 },
             expectedMain = "MULTI_SHOT",
         },
         {
-            label = "Steady Shot fills when nothing else is ready",
-            cooldowns = { ARCANE_SHOT = 4, AIMED_SHOT = 4, MULTI_SHOT = 4, STEADY_SHOT = 0 },
+            label = "Arcane Shot fills when Multi-Shot is down",
+            cooldowns = { MULTI_SHOT = 4, ARCANE_SHOT = 0 },
+            expectedMain = "ARCANE_SHOT",
+        },
+        {
+            label = "Steady Shot is the base action when instants are down",
+            cooldowns = { MULTI_SHOT = 4, ARCANE_SHOT = 4 },
             expectedMain = "STEADY_SHOT",
         },
         {
-            label = "Insufficient mana for Arcane Shot falls through to Steady Shot",
-            state = { mana = 120 },
-            cooldowns = { ARCANE_SHOT = 0, AIMED_SHOT = 4, MULTI_SHOT = 4, STEADY_SHOT = 0 },
+            label = "Serpent Sting is a low-priority filler, not top priority",
+            state = { serpentStingExpiration = false },
+            cooldowns = { MULTI_SHOT = 0, ARCANE_SHOT = 0, SERPENT_STING = 0 },
+            expectedMain = "MULTI_SHOT",
+        },
+        {
+            label = "Serpent Sting fills when nothing else is ready and it's not up",
+            state = { serpentStingExpiration = false, moving = true },
+            cooldowns = { MULTI_SHOT = 4, ARCANE_SHOT = 4, SERPENT_STING = 0 },
+            expectedMain = "SERPENT_STING",
+        },
+        {
+            label = "Serpent Sting is skipped while already active",
+            cooldowns = { MULTI_SHOT = 4, ARCANE_SHOT = 4, SERPENT_STING = 0, STEADY_SHOT = 0 },
             expectedMain = "STEADY_SHOT",
         },
         {
-            label = "Leveling loadout without Aimed/Multi-Shot still fills with Steady Shot",
+            label = "Insufficient mana for Multi-Shot falls through to Arcane Shot",
+            state = { mana = 160 },
+            cooldowns = { MULTI_SHOT = 0, ARCANE_SHOT = 0 },
+            expectedMain = "ARCANE_SHOT",
+        },
+        {
+            label = "Leveling loadout without Multi-Shot still uses Arcane then Steady",
             known = BASE_KNOWN,
-            cooldowns = { ARCANE_SHOT = 4, STEADY_SHOT = 0 },
+            cooldowns = { ARCANE_SHOT = 4 },
+            expectedMain = "STEADY_SHOT",
+        },
+    },
+    clip = {
+        {
+            label = "Plenty of time before the next Auto Shot: Steady Shot is safe",
+            cooldowns = { MULTI_SHOT = 4, ARCANE_SHOT = 4 },
+            swingRemaining = 2.5,
+            gcdRemaining = 0,
+            steadyShotCastTime = 1.5,
+            expectedMain = "STEADY_SHOT",
+        },
+        {
+            label = "Steady Shot would clip the next Auto Shot: wait instead",
+            cooldowns = { MULTI_SHOT = 4, ARCANE_SHOT = 4, SERPENT_STING = 4 },
+            swingRemaining = 0.5,
+            gcdRemaining = 0,
+            steadyShotCastTime = 1.5,
+            expectedMain = nil,
+            expectedWait = true,
+        },
+        {
+            label = "Steady Shot would clip, but Arcane Shot is a safe instant",
+            cooldowns = { MULTI_SHOT = 4, ARCANE_SHOT = 0 },
+            swingRemaining = 0.5,
+            gcdRemaining = 0,
+            steadyShotCastTime = 1.5,
+            expectedMain = "ARCANE_SHOT",
+        },
+        {
+            label = "No Auto Shot timer yet (pull just started): Steady Shot is safe",
+            state = { rangedSpeed = false, nextAutoShotAt = false },
+            cooldowns = { MULTI_SHOT = 4, ARCANE_SHOT = 4 },
             expectedMain = "STEADY_SHOT",
         },
     },
     moving = {
         {
-            label = "Moving still allows the instant Arcane Shot",
-            state = { moving = true },
-            cooldowns = { ARCANE_SHOT = 0, AIMED_SHOT = 0, STEADY_SHOT = 0 },
-            expectedMain = "ARCANE_SHOT",
-        },
-        {
             label = "Moving still allows the instant Multi-Shot",
             state = { moving = true },
-            cooldowns = { ARCANE_SHOT = 4, MULTI_SHOT = 0 },
+            cooldowns = { MULTI_SHOT = 0, ARCANE_SHOT = 0 },
             expectedMain = "MULTI_SHOT",
         },
         {
-            label = "Moving with only cast-time shots ready: no action",
+            label = "Moving still allows the instant Arcane Shot",
             state = { moving = true },
-            cooldowns = { ARCANE_SHOT = 4, MULTI_SHOT = 4, AIMED_SHOT = 0, STEADY_SHOT = 0 },
+            cooldowns = { MULTI_SHOT = 4, ARCANE_SHOT = 0 },
+            expectedMain = "ARCANE_SHOT",
+        },
+        {
+            label = "Moving blocks Steady Shot entirely",
+            state = { moving = true, serpentStingExpiration = false },
+            cooldowns = { MULTI_SHOT = 4, ARCANE_SHOT = 4, SERPENT_STING = 0, STEADY_SHOT = 0 },
+            expectedMain = "SERPENT_STING",
+        },
+        {
+            label = "Moving with nothing instant ready: wait",
+            state = { moving = true },
+            cooldowns = { MULTI_SHOT = 4, ARCANE_SHOT = 4, SERPENT_STING = 4, STEADY_SHOT = 0 },
             expectedMain = nil,
+            expectedWait = true,
+        },
+    },
+    precombat = {
+        {
+            label = "Aimed Shot is recommended before the pull",
+            state = { inCombat = false },
+            cooldowns = { AIMED_SHOT = 0, MULTI_SHOT = 4, ARCANE_SHOT = 4 },
+            expectedMain = "AIMED_SHOT",
+        },
+        {
+            label = "Aimed Shot is never recommended once combat starts",
+            state = { inCombat = true },
+            cooldowns = { AIMED_SHOT = 0, MULTI_SHOT = 0, ARCANE_SHOT = 4 },
+            expectedMain = "MULTI_SHOT",
+        },
+        {
+            label = "Aimed Shot down before the pull: falls back to Multi-Shot opener",
+            state = { inCombat = false },
+            cooldowns = { AIMED_SHOT = 4, MULTI_SHOT = 0 },
+            expectedMain = "MULTI_SHOT",
         },
     },
     aoe = {
         {
             label = "Two enemies stay in single-target mode",
             state = { enemyCount = 2 },
-            cooldowns = { ARCANE_SHOT = 0, MULTI_SHOT = 0 },
-            expectedMain = "ARCANE_SHOT",
+            cooldowns = { MULTI_SHOT = 0, ARCANE_SHOT = 0 },
+            expectedMain = "MULTI_SHOT",
             expectedAoe = false,
         },
         {
-            label = "Three enemies switch to AoE and lead with Multi-Shot",
+            label = "Three enemies switch to AoE - Multi-Shot stays top priority",
             state = { enemyCount = 3 },
-            cooldowns = { ARCANE_SHOT = 0, MULTI_SHOT = 0 },
+            cooldowns = { MULTI_SHOT = 0, ARCANE_SHOT = 0 },
             expectedMain = "MULTI_SHOT",
-            expectedAoe = true,
-        },
-        {
-            label = "AoE still maintains Serpent Sting first",
-            state = { enemyCount = 3, serpentStingExpiration = false },
-            cooldowns = { SERPENT_STING = 0, MULTI_SHOT = 0 },
-            expectedMain = "SERPENT_STING",
             expectedAoe = true,
         },
         {
             label = "Forced single-target mode ignores enemy count",
             mode = "single",
             state = { enemyCount = 5 },
-            cooldowns = { ARCANE_SHOT = 0, MULTI_SHOT = 0 },
-            expectedMain = "ARCANE_SHOT",
+            cooldowns = { MULTI_SHOT = 0 },
+            expectedMain = "MULTI_SHOT",
             expectedAoe = false,
         },
         {
             label = "Forced AoE mode engages even with one enemy",
             mode = "aoe",
             state = { enemyCount = 1 },
-            cooldowns = { ARCANE_SHOT = 0, MULTI_SHOT = 0 },
+            cooldowns = { MULTI_SHOT = 0 },
             expectedMain = "MULTI_SHOT",
             expectedAoe = true,
         },
@@ -204,7 +232,7 @@ local function BuildContext(step)
     local costs = {}
 
     for key in pairs(known) do
-        cooldowns[key] = 99
+        cooldowns[key] = 0
         inRange[key] = true
         costs[key] = ns.CONFIG.COSTS[key] or 0
     end
@@ -224,19 +252,16 @@ local function BuildContext(step)
         targetHealthMax = 100000,
         targetTTD = 60,
 
+        -- Already active by default so scenarios that are not testing
+        -- Serpent Sting itself never see it as a spurious top pick.
         serpentStingExpiration = now + 15,
+        rangedSpeed = 2.8,
+        nextAutoShotAt = now + 2.6,
 
         enemyCount = 1,
     }
 
     for key, value in pairs(CopyTable(step.state)) do state[key] = value end
-
-    -- Expiration timers are relative to `now`, which only exists once
-    -- BuildContext runs, so scenarios request them via a delta instead
-    -- of a raw state override.
-    if step.stingExpiresIn ~= nil then
-        state.serpentStingExpiration = now + step.stingExpiresIn
-    end
 
     return {
         now = now,
@@ -250,6 +275,8 @@ local function BuildContext(step)
         cooldowns = cooldowns,
         inRange = inRange,
         gcdRemaining = step.gcdRemaining or 0,
+        swingRemaining = step.swingRemaining or 2.6,
+        steadyShotCastTime = step.steadyShotCastTime or 1.5,
     }
 end
 
@@ -282,6 +309,10 @@ local function StepPassed(step, snapshot)
     if actualMain ~= step.expectedMain then return false end
     if step.expectedAoe ~= nil and snapshot.aoeActive ~= step.expectedAoe then
         return false
+    end
+    if step.expectedWait ~= nil then
+        local isWaiting = snapshot.wait ~= nil
+        if isWaiting ~= step.expectedWait then return false end
     end
     return true
 end

@@ -13,7 +13,7 @@ local BOOKTYPE_SPELL_VALUE = BOOKTYPE_SPELL or "spell"
 local MANA_POWER_TYPE = (Enum and Enum.PowerType and Enum.PowerType.Mana) or 0
 
 ns.MANA_POWER_TYPE = MANA_POWER_TYPE
-ns.VERSION = "1.0.0"
+ns.VERSION = "1.1.0"
 
 -- Ability identity is resolved primarily by literal English spell name
 -- (matched against the player's own spellbook at runtime), NOT by the
@@ -41,12 +41,12 @@ ns.CONFIG = {
         STEADY_SHOT     = 110,
     },
 
-    -- Refresh Serpent Sting this many seconds before it actually expires,
-    -- so there is never a gap where the DoT has fallen off unnoticed.
-    SERPENT_STING_REFRESH_AT = 3,
-    -- Do not bother applying/refreshing Serpent Sting on a target that
-    -- will not live long enough for it to matter.
+    -- If Serpent Sting is not currently active, it is a safe instant
+    -- filler; this only stops it being re-suggested on a target about to
+    -- die anyway.
     SERPENT_STING_MIN_TTD    = 6,
+    -- Tolerance for the Auto Shot clip-avoidance check below.
+    STEADY_SHOT_CLIP_TOLERANCE = 0.25,
     AOE_ENEMY_THRESHOLD      = 3,
     ENEMY_MEMORY             = 3.5,
     GCD_DURATION             = 1.50,
@@ -75,8 +75,17 @@ ns.state = {
 
     -- Serpent Sting is a real DoT with a live-readable expiration, applied
     -- by the player specifically (so a different Hunter's Serpent Sting on
-    -- the same target is not mistaken for our own).
+    -- the same target is not mistaken for our own). It is a safe instant
+    -- filler in this rotation, not a debuff to keep up at all costs.
     serpentStingExpiration    = 0,
+
+    -- Auto Shot fires on its own timer, just like a melee swing. Steady
+    -- Shot must be timed so it does not delay ("clip") the next Auto Shot -
+    -- this is the single most important Hunter DPS mechanic, confirmed
+    -- against Wowhead/Icy Veins/Warcraft Tavern before writing this addon.
+    rangedSpeed                = 0,
+    lastAutoShotAt             = 0,
+    nextAutoShotAt             = 0,
 
     nearbyEnemies              = {},
     enemyCount                 = 0,
@@ -99,6 +108,8 @@ local function InitDB()
     if db.showIcon       == nil then db.showIcon = true end
     if db.showGlow       == nil then db.showGlow = true end
     if db.showCooldowns  == nil then db.showCooldowns = true end
+    if db.showSwingBar   == nil then db.showSwingBar = true end
+    if db.showWaitIndicator == nil then db.showWaitIndicator = true end
     if db.locked         == nil then db.locked = true end
     if db.debugMode      == nil then db.debugMode = false end
     if db.testMode       == nil then db.testMode = false end
@@ -465,6 +476,81 @@ function ns.CountNearbyEnemies()
 end
 
 -- ------------------------------------------------------------
+-- Auto Shot swing tracking
+--
+-- Auto Shot fires on its own timer, exactly like a melee weapon swing.
+-- Steady Shot has a real cast time, so casting it carelessly can delay
+-- ("clip") the next Auto Shot and cost real DPS - this is the single
+-- most-cited Hunter mechanic in TBC guides. Tracking it here lets
+-- Rotation.lua check "would Steady Shot finish before the next Auto Shot
+-- is due" before ever recommending it, the same way the companion
+-- Warrior addon protects its post-swing Slam window.
+-- ------------------------------------------------------------
+
+local AUTO_SHOT_NAME = "Auto Shot"
+
+function ns.GetRangedSpeed()
+    if not UnitRangedDamage then return 0 end
+    local speed = select(8, UnitRangedDamage("player"))
+    return speed or 0
+end
+
+-- Shared with the main-hand swing math a melee rotation addon would use:
+-- rescale the remaining time on a timer proportionally when the
+-- underlying speed changes (e.g. Rapid Fire, a haste trinket proc).
+function ns.RescaleSwingRemaining(remaining, oldSpeed, newSpeed)
+    remaining = math.max(0, tonumber(remaining) or 0)
+    oldSpeed = tonumber(oldSpeed) or 0
+    newSpeed = tonumber(newSpeed) or 0
+
+    if remaining <= 0 or oldSpeed <= 0 or newSpeed <= 0 then
+        return remaining
+    end
+
+    local fractionRemaining = remaining / oldSpeed
+    fractionRemaining = math.max(0, math.min(1, fractionRemaining))
+    return fractionRemaining * newSpeed
+end
+
+function ns.UpdateRangedSpeed()
+    local now = GetTime()
+    local oldSpeed = ns.state.rangedSpeed or 0
+    local newSpeed = ns.GetRangedSpeed()
+
+    if newSpeed <= 0 then return end
+    if oldSpeed > 0 and ns.state.nextAutoShotAt > now then
+        local remaining = ns.state.nextAutoShotAt - now
+        ns.state.nextAutoShotAt = now
+            + ns.RescaleSwingRemaining(remaining, oldSpeed, newSpeed)
+    end
+    ns.state.rangedSpeed = newSpeed
+end
+
+function ns.ResetRangedTracking()
+    ns.state.rangedSpeed = ns.GetRangedSpeed()
+    ns.state.lastAutoShotAt = 0
+    ns.state.nextAutoShotAt = 0
+end
+
+function ns.RecordAutoShot(now)
+    now = now or GetTime()
+    ns.UpdateRangedSpeed()
+    ns.state.lastAutoShotAt = now
+    ns.state.nextAutoShotAt = now + math.max(0.1, ns.state.rangedSpeed)
+end
+
+function ns.GetRangedSwingRemaining()
+    if ns.state.nextAutoShotAt <= 0 then return 0 end
+    return math.max(0, ns.state.nextAutoShotAt - GetTime())
+end
+
+function ns.GetRangedSwingProgress()
+    local speed = ns.state.rangedSpeed or 0
+    if speed <= 0 or ns.state.nextAutoShotAt <= 0 then return 0 end
+    return math.max(0, math.min(1, 1 - ns.GetRangedSwingRemaining() / speed))
+end
+
+-- ------------------------------------------------------------
 -- Live state refresh
 -- ------------------------------------------------------------
 
@@ -551,6 +637,7 @@ function ns.RefreshState()
     ns.state.maxMana = UnitPowerMax("player", MANA_POWER_TYPE) or 100
     ns.state.inCombat = not not UnitAffectingCombat("player")
     ns.state.moving = GetUnitSpeed and (GetUnitSpeed("player") or 0) > 0 or false
+    ns.UpdateRangedSpeed()
     UpdateTargetState(now)
     ns.state.enemyCount = ns.CountNearbyEnemies()
 end
@@ -595,6 +682,10 @@ local function HandleCombatLogEvent()
         if EventIsPlayerAttack(subevent) and destGUID then
             ns.MarkEnemy(destGUID, destFlags)
         end
+        if (subevent == "RANGE_DAMAGE" or subevent == "RANGE_MISSED")
+            and cle[13] == AUTO_SHOT_NAME then
+            ns.RecordAutoShot(GetTime())
+        end
         if subevent == "SPELL_CAST_SUCCESS" and ns.Diagnostics_AddAbilityUse then
             local abilityKey = GetCombatLogAbilityKey(cle[13])
             if abilityKey then
@@ -618,6 +709,8 @@ eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 eventFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
 eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
 eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
+eventFrame:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
+eventFrame:RegisterEvent("UNIT_RANGEDDAMAGE")
 eventFrame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
 eventFrame:RegisterEvent("SPELLS_CHANGED")
 eventFrame:RegisterEvent("CHARACTER_POINTS_CHANGED")
@@ -630,6 +723,7 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         ns.RefreshAbilityMetadata()
         ns.RefreshKnownSpells()
         ns.state.playerGUID = UnitGUID("player")
+        ns.ResetRangedTracking()
         ns.RefreshState()
         if ns.Display_ApplySettings then ns.Display_ApplySettings() end
         print("|cff4477ffMarksmanship Rotation Helper|r " .. ns.VERSION
@@ -638,15 +732,22 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
         ns.state.playerGUID = UnitGUID("player")
         ns.RefreshAbilityMetadata()
         ns.RefreshKnownSpells()
+        ns.ResetRangedTracking()
         ns.RefreshState()
     elseif event == "SPELLS_CHANGED" or event == "CHARACTER_POINTS_CHANGED" then
         ns.RefreshKnownSpells()
         ns.RefreshAbilityMetadata()
         if ns.Settings_Refresh then ns.Settings_Refresh() end
+    elseif event == "PLAYER_EQUIPMENT_CHANGED" then
+        ns.ResetRangedTracking()
+    elseif event == "UNIT_RANGEDDAMAGE" then
+        local unit = ...
+        if unit == "player" then ns.UpdateRangedSpeed() end
     elseif event == "PLAYER_REGEN_ENABLED" then
         if ns.Diagnostics_AddEvent then ns.Diagnostics_AddEvent("COMBAT_END") end
         ns.state.nearbyEnemies = {}
         ns.state.enemyCount = ns.state.targetAttackable and 1 or 0
+        ns.ResetRangedTracking()
     elseif event == "PLAYER_REGEN_DISABLED" then
         if ns.Diagnostics_AddEvent then ns.Diagnostics_AddEvent("COMBAT_START") end
         ns.RefreshState()
@@ -751,6 +852,11 @@ SlashCmdList["MARKSMANSHIPROTATIONHELPER"] = function(message)
         print(prefix .. "Action-bar glow: " .. OnOff(ToggleSetting("showGlow")))
     elseif message == "cooldowns" then
         print(prefix .. "Cooldown and trinket row: " .. OnOff(ToggleSetting("showCooldowns")))
+    elseif message == "swing" then
+        print(prefix .. "Auto Shot swing bar: " .. OnOff(ToggleSetting("showSwingBar")))
+    elseif message == "wait" then
+        print(prefix .. "Intentional wait indicator: "
+            .. OnOff(ToggleSetting("showWaitIndicator")))
     elseif message == "sting" then
         print(prefix .. "Maintain Serpent Sting: " .. OnOff(ToggleSetting("maintainSerpentSting")))
     elseif message == "debug" then
@@ -870,6 +976,8 @@ SlashCmdList["MARKSMANSHIPROTATIONHELPER"] = function(message)
         print("  /mrh sting                  - toggle Serpent Sting maintenance")
         print("  /mrh icon | glow            - toggle main icon/action-bar glow")
         print("  /mrh cooldowns              - toggle cooldown and trinket row")
+        print("  /mrh swing                  - toggle the Auto Shot swing bar")
+        print("  /mrh wait                   - toggle intentional wait advice")
         print("  /mrh scale 1.2              - resize the complete display")
         print("  /mrh debug                  - toggle live diagnostic information")
         print("  /mrh test                   - preview the high-level display")

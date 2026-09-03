@@ -7,7 +7,7 @@
 local ADDON_NAME, ns = ...
 
 local PANEL_WIDTH = 720
-local PANEL_HEIGHT = 740
+local PANEL_HEIGHT = 768
 
 local COLORS = {
     teal = { 0.32, 0.78, 0.36, 1.00 },
@@ -131,7 +131,7 @@ end
 
 local rotationHeader = CreateSectionHeader("Rotation behavior", 24, -166, 320)
 local displayHeader = CreateSectionHeader("Display", 376, -166, 320)
-local toolsHeader = CreateSectionHeader("Testing and self-check", 24, -460, 672)
+local toolsHeader = CreateSectionHeader("Testing and self-check", 24, -488, 672)
 
 local controls = {}
 local refreshing = false
@@ -233,8 +233,8 @@ local modeDropdown = CreateDropdown(
 
 CreateCheckbox(
     "MarksmanshipRotationHelperStingCheckbox",
-    "Maintain Serpent Sting",
-    "Keeps Serpent Sting active on your target, refreshing a few seconds before it lapses. Turn this off if another Hunter in the group is assigned to it.",
+    "Suggest Serpent Sting",
+    "Offers Serpent Sting only as a safe instant filler when it isn't already up - it's not worth interrupting the shot priority to maintain. Turn this off if another Hunter in the group is assigned to it.",
     24,
     -269,
     "maintainSerpentSting"
@@ -250,11 +250,20 @@ CreateCheckbox(
 )
 
 CreateCheckbox(
+    "MarksmanshipRotationHelperSwingCheckbox",
+    "Auto Shot swing bar",
+    "Shows the compact Auto Shot progress bar and tints it when a Steady Shot would clip the next shot.",
+    372,
+    -236,
+    "showSwingBar"
+)
+
+CreateCheckbox(
     "MarksmanshipRotationHelperGlowCheckbox",
     "Action-bar glow",
     "Highlights a matching visible spell or spell macro on Blizzard, Bartender4, or Dominos bars.",
     372,
-    -236,
+    -268,
     "showGlow"
 )
 
@@ -263,8 +272,17 @@ CreateCheckbox(
     "Compact cooldown icons",
     "Shows Rapid Fire and usable equipped trinkets without permanent text labels.",
     372,
-    -268,
+    -300,
     "showCooldowns"
+)
+
+CreateCheckbox(
+    "MarksmanshipRotationHelperWaitCheckbox",
+    "Intentional wait indicator",
+    "Shows a dimmed watch when using a filler would clip the next Auto Shot. It never glows an action-bar button.",
+    372,
+    -332,
+    "showWaitIndicator"
 )
 
 CreateCheckbox(
@@ -272,7 +290,7 @@ CreateCheckbox(
     "Lock recommendation display",
     "When unlocked, drag the main recommendation display with the left mouse button.",
     372,
-    -300,
+    -366,
     "locked"
 )
 
@@ -281,12 +299,12 @@ CreateCheckbox(
     "Diagnostic panel",
     "Shows the live combat values used by the recommendation engine. Useful for testing and bug reports.",
     372,
-    -332,
+    -398,
     "debugMode"
 )
 
 local scaleLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-scaleLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", 372, -374)
+scaleLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", 372, -421)
 scaleLabel:SetText("Display scale")
 
 local scaleSlider = CreateFrame(
@@ -329,14 +347,15 @@ local scenarioDropdown = CreateDropdown(
     "MarksmanshipRotationHelperScenarioDropdown",
     "Scenario",
     28,
-    -498,
+    -526,
     220,
     {
         { value = "all", label = "Complete suite" },
-        { value = "sting", label = "Serpent Sting maintenance" },
-        { value = "core", label = "Arcane / Aimed / Multi-Shot priority" },
+        { value = "core", label = "Multi-Shot / Arcane Shot / Steady Shot priority" },
+        { value = "clip", label = "Steady Shot clip avoidance" },
         { value = "moving", label = "Moving gates cast-time shots" },
-        { value = "aoe", label = "AoE / Multi-Shot priority" },
+        { value = "precombat", label = "Aimed Shot is pre-pull only" },
+        { value = "aoe", label = "AoE mode keeps the same priority" },
     },
     function() return selectedScenario end,
     function(value) selectedScenario = value end
@@ -345,7 +364,7 @@ local scenarioDropdown = CreateDropdown(
 local statusOverride
 
 local previewButton
-previewButton = CreateButton("Start display preview", 180, 376, -498, function()
+previewButton = CreateButton("Start display preview", 180, 376, -526, function()
     if not ns.db then return end
     if ns.Simulator_IsActive and ns.Simulator_IsActive() then
         ns.Simulator_Stop()
@@ -361,7 +380,7 @@ local startSimulatorButton = CreateButton(
     "Start selected scenario",
     180,
     376,
-    -531,
+    -559,
     function()
         if not ns.Simulator_Start then return end
         local ok, err = ns.Simulator_Start(selectedScenario)
@@ -379,7 +398,7 @@ recordButton = CreateButton(
     "Start 60-second recording",
     220,
     28,
-    -564,
+    -592,
     function()
         if not ns.Diagnostics_Start then return end
         if ns.Diagnostics_IsActive and ns.Diagnostics_IsActive() then
@@ -401,7 +420,7 @@ local nextSimulatorButton = CreateButton(
     "Next step",
     87,
     376,
-    -564,
+    -592,
     function()
         if ns.Simulator_Next then ns.Simulator_Next() end
         statusOverride = nil
@@ -413,7 +432,7 @@ local stopSimulatorButton = CreateButton(
     "Stop",
     87,
     469,
-    -564,
+    -592,
     function()
         if ns.Simulator_Stop then ns.Simulator_Stop() end
         statusOverride = nil
@@ -425,7 +444,7 @@ local openReportButton = CreateButton(
     "Open report",
     106,
     28,
-    -597,
+    -625,
     function()
         if ns.Diagnostics_OpenReport then ns.Diagnostics_OpenReport() end
     end
@@ -435,7 +454,7 @@ local clearReportButton = CreateButton(
     "Clear report",
     106,
     142,
-    -597,
+    -625,
     function()
         if ns.Diagnostics_Clear then ns.Diagnostics_Clear() end
         statusOverride = "The in-memory diagnostic report was cleared."
@@ -447,7 +466,7 @@ local checkSimulatorButton = CreateButton(
     "Run priority checks",
     180,
     376,
-    -597,
+    -625,
     function()
         if not ns.Simulator_RunSelfCheck then return end
         local passed, total, failures = ns.Simulator_RunSelfCheck()
@@ -469,7 +488,7 @@ local resetButton = CreateButton(
     "Reset position and scale",
     220,
     28,
-    -630,
+    -658,
     function()
         if not ns.db then return end
         ns.db.point, ns.db.x, ns.db.y, ns.db.scale =
@@ -481,7 +500,7 @@ local resetButton = CreateButton(
 )
 
 local helpText = panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-helpText:SetPoint("TOPLEFT", panel, "TOPLEFT", 28, -668)
+helpText:SetPoint("TOPLEFT", panel, "TOPLEFT", 28, -696)
 helpText:SetWidth(PANEL_WIDTH - 56)
 helpText:SetJustifyH("LEFT")
 helpText:SetText(

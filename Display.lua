@@ -16,7 +16,10 @@ local COLORS = {
     ready = { 0.32, 0.78, 0.36, 1.00 },
     accent = { 0.35, 0.70, 1.00, 1.00 },
     inactive = { 0.22, 0.27, 0.34, 0.95 },
+    wait = { 0.44, 0.58, 0.76, 1.00 },
 }
+
+local WAIT_ICON_TEXTURE = "Interface\\Icons\\INV_Misc_PocketWatch_01"
 
 local root = CreateFrame("Frame", "MarksmanshipRotationHelperRoot", UIParent)
 root:SetSize(180, 130)
@@ -126,12 +129,53 @@ unlockedText:SetTextColor(
 unlockedText:Hide()
 
 -- ------------------------------------------------------------
+-- Auto Shot swing bar
+-- ------------------------------------------------------------
+
+local swingBar = CreateFrame(
+    "Frame",
+    "MarksmanshipRotationHelperSwingBar",
+    root,
+    "BackdropTemplate"
+)
+swingBar:SetSize(92, 8)
+swingBar:SetPoint("TOP", mainFrame, "BOTTOM", 0, -6)
+swingBar:SetBackdrop({
+    bgFile = "Interface\\Buttons\\WHITE8X8",
+    edgeFile = "Interface\\Buttons\\WHITE8X8",
+    edgeSize = 1,
+})
+swingBar:SetBackdropColor(
+    COLORS.background[1],
+    COLORS.background[2],
+    COLORS.background[3],
+    0.94
+)
+swingBar:SetBackdropBorderColor(
+    COLORS.inactive[1],
+    COLORS.inactive[2],
+    COLORS.inactive[3],
+    COLORS.inactive[4]
+)
+swingBar:Hide()
+
+local swingFill = swingBar:CreateTexture(nil, "ARTWORK")
+swingFill:SetPoint("LEFT", swingBar, "LEFT", 1, 0)
+swingFill:SetHeight(6)
+swingFill:SetColorTexture(
+    COLORS.ready[1],
+    COLORS.ready[2],
+    COLORS.ready[3],
+    0.95
+)
+
+-- ------------------------------------------------------------
 -- Cooldown availability row
 -- ------------------------------------------------------------
 
 local cooldownRow = CreateFrame("Frame", "MarksmanshipRotationHelperCooldownRow", root)
 cooldownRow:SetSize(190, 45)
-cooldownRow:SetPoint("TOP", mainFrame, "BOTTOM", 0, -10)
+cooldownRow:SetPoint("TOP", swingBar, "BOTTOM", 0, -8)
 cooldownRow:Hide()
 
 local COOLDOWN_ICON_SIZE = 36
@@ -319,14 +363,20 @@ end
 local function ShowMainTooltip()
     local snapshot = lastDisplaySnapshot
     local decision = snapshot and snapshot.main
-    if not decision then return end
+    local wait = snapshot and snapshot.wait
+    if not decision and not wait then return end
 
     GameTooltip:SetOwner(mainFrame, "ANCHOR_TOP")
     if GameTooltip.ClearLines then GameTooltip:ClearLines() end
     GameTooltip:AddLine("Marksmanship Rotation Helper", 0.32, 0.78, 0.36)
-    GameTooltip:AddLine(ns.GetAbilityName(decision.ability) or decision.ability, 1, 1, 1)
-    if decision.reason and decision.reason ~= "" then
-        GameTooltip:AddLine(decision.reason, 0.72, 0.78, 0.86, true)
+    if wait then
+        GameTooltip:AddLine("WAIT", COLORS.wait[1], COLORS.wait[2], COLORS.wait[3])
+        GameTooltip:AddLine(wait.reason, 0.72, 0.78, 0.86, true)
+    else
+        GameTooltip:AddLine(ns.GetAbilityName(decision.ability) or decision.ability, 1, 1, 1)
+        if decision.reason and decision.reason ~= "" then
+            GameTooltip:AddLine(decision.reason, 0.72, 0.78, 0.86, true)
+        end
     end
     GameTooltip:AddLine(" ")
     GameTooltip:AddDoubleLine(
@@ -605,6 +655,9 @@ local function BuildDebugLines(snapshot)
     if snapshot.main then
         table.insert(lines, "Main: " .. (ns.GetAbilityName(snapshot.main.ability) or "?"))
         table.insert(lines, "Reason: " .. (snapshot.main.reason or ""))
+    elseif snapshot.wait then
+        table.insert(lines, "Main: intentional wait (" .. snapshot.wait.kind .. ")")
+        table.insert(lines, "Reason: " .. (snapshot.wait.reason or ""))
     else
         table.insert(lines, "Main: no action needed")
         table.insert(lines, "Reason: auto shot continues")
@@ -677,7 +730,9 @@ end
 
 local function UpdateMainIcon(snapshot)
     local decision = snapshot and snapshot.main
-    if not ns.db.showIcon or not decision then
+    local wait = snapshot and snapshot.wait
+    local showWait = ns.db.showWaitIndicator and wait
+    if not ns.db.showIcon or (not decision and not showWait) then
         mainFrame:Hide()
         mainCooldown:SetCooldown(0, 0)
         if TooltipIsOwned(mainFrame) then GameTooltip:Hide() end
@@ -686,6 +741,24 @@ local function UpdateMainIcon(snapshot)
     end
 
     lastDisplaySnapshot = snapshot
+    if showWait then
+        mainTexture:SetTexture(WAIT_ICON_TEXTURE)
+        if mainTexture.SetDesaturated then mainTexture:SetDesaturated(true) end
+        mainTexture:SetVertexColor(0.72, 0.78, 0.86, 0.88)
+        mainCooldown:SetCooldown(0, 0)
+        SetBorder(mainFrame, ns.db.locked and COLORS.wait or COLORS.accent)
+        mainFrame:Show()
+
+        if tooltipVisible and GetTime() - tooltipLastRefresh >= 0.20 then
+            if TooltipIsOwned(mainFrame) then
+                ShowMainTooltip()
+            else
+                tooltipVisible = false
+            end
+        end
+        return
+    end
+
     if mainTexture.SetDesaturated then mainTexture:SetDesaturated(false) end
     mainTexture:SetVertexColor(1, 1, 1, 1)
     mainTexture:SetTexture(ns.GetAbilityIcon(decision.ability))
@@ -707,6 +780,36 @@ local function UpdateMainIcon(snapshot)
             tooltipVisible = false
         end
     end
+end
+
+local function UpdateSwingBar(snapshot)
+    local hasLiveSwing = ns.state.inCombat
+        and (ns.state.rangedSpeed or 0) > 0
+        and (ns.state.nextAutoShotAt or 0) > 0
+    if not ns.db.showSwingBar or snapshot.simulation or not hasLiveSwing then
+        swingBar:Hide()
+        return
+    end
+
+    local progress = ns.GetRangedSwingProgress()
+    swingFill:SetWidth(math.max(1, 90 * progress))
+
+    if ns.db.showWaitIndicator and snapshot and snapshot.wait then
+        swingFill:SetColorTexture(
+            COLORS.wait[1],
+            COLORS.wait[2],
+            COLORS.wait[3],
+            0.95
+        )
+    else
+        swingFill:SetColorTexture(
+            COLORS.ready[1],
+            COLORS.ready[2],
+            COLORS.ready[3],
+            0.95
+        )
+    end
+    swingBar:Show()
 end
 
 local function UpdateTestBanner(snapshot)
@@ -791,6 +894,7 @@ ticker:SetScript("OnUpdate", function(_, elapsed)
     local snapshot = BuildSnapshot()
     SafeUpdate("Diagnostic recorder", ns.Diagnostics_Sample or function() end, snapshot)
     SafeUpdate("Main icon", UpdateMainIcon, snapshot)
+    SafeUpdate("Swing bar", UpdateSwingBar, snapshot)
     SafeUpdate("Test/simulation banner", UpdateTestBanner, snapshot)
     SafeUpdate("Action-bar glow", UpdateGlow, snapshot)
     SafeUpdate("Debug panel", UpdateDebugPanel, snapshot)

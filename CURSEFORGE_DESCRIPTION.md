@@ -4,12 +4,12 @@ Marksmanship Rotation Helper is a lightweight, shot-priority PvE advisor for
 **Marksmanship Hunters** in World of Warcraft: The Burning Crusade
 Anniversary.
 
-Auto Shot fires on its own - the addon focuses on the part you actually
-control: keeping Serpent Sting up and firing your instant/cast shots in the
-right order.
+Auto Shot fires on its own timer, just like a melee weapon swing - the
+addon's job is protecting that timer and firing your instant/cast shots in
+the right order around it.
 
-**Serpent Sting upkeep -> Arcane Shot -> Aimed Shot -> Multi-Shot -> Steady
-Shot filler**
+**Multi-Shot -> Arcane Shot -> Steady Shot (if it won't clip your next Auto
+Shot) -> Serpent Sting filler. Aimed Shot before the pull.**
 
 The addon only recommends actions. It never casts abilities, changes
 equipment, targets enemies, or automates player input.
@@ -17,16 +17,18 @@ equipment, targets enemies, or automates player input.
 ## Features
 
 - Clean icon-first combat display with a large primary recommendation.
+- Auto Shot swing bar and an intentional-wait indicator, so you can see at
+  a glance when the addon is deliberately holding back to protect your
+  next shot.
 - Full ability reason, mana, target mode, and Serpent Sting details
   available by hovering the primary icon.
-- Serpent Sting maintenance that reads the real live debuff duration and
-  refreshes a few seconds early instead of only after it has already
-  lapsed.
-- Arcane Shot, Aimed Shot, and Multi-Shot cooldown priority, with Steady
-  Shot as the filler in between.
+- Multi-Shot / Arcane Shot / Steady Shot cooldown priority, with real Auto
+  Shot clip-avoidance gating Steady Shot.
+- Serpent Sting offered only as a safe filler when it isn't already ticking
+  on your target - not proactively refreshed like a maintained DoT.
 - Cast-time shots (Steady Shot, Aimed Shot) are correctly skipped while
-  moving, since they would just fail to cast; the instant Arcane Shot and
-  Multi-Shot remain available.
+  moving, since they would just fail to cast; the instant Multi-Shot,
+  Arcane Shot, and Serpent Sting remain available.
 - Automatic single-target and multi-target profiles, plus manual
   overrides (`/mrh mode auto|single|aoe`).
 - Action-button highlighting for Blizzard bars, Bartender4, and Dominos.
@@ -35,21 +37,20 @@ equipment, targets enemies, or automates player input.
 - Built-in deterministic priority self-test.
 - Privacy-safe 60-second diagnostic report for useful bug reports.
 
-## Single-target priority
+## Shot priority
 
-1. Maintain Serpent Sting if it's missing, wrong, or about to lapse.
+Same order in single-target and AoE - every guide checked agrees
+Multi-Shot's per-cast damage beats Steady Shot's regardless of target
+count:
+
+1. Multi-Shot.
 2. Arcane Shot.
-3. Aimed Shot (skipped while moving - it has a cast time).
-4. Multi-Shot.
-5. Steady Shot filler (also skipped while moving).
+3. Steady Shot, but only if it will finish before your next Auto Shot is
+   due - otherwise the addon tells you to wait instead.
+4. Serpent Sting, if it isn't already active on your target.
 
-## AoE priority
-
-1. Maintain Serpent Sting.
-2. Multi-Shot.
-3. Arcane Shot.
-4. Aimed Shot.
-5. Steady Shot filler.
+Before combat starts: Aimed Shot. Its cast time is too long to weave in
+mid-fight without disrupting your Auto Shot timing.
 
 Automatic enemy counting uses recent combat-log interactions. If it cannot
 see an unengaged nearby enemy, force the profile with `/mrh mode aoe`.
@@ -70,12 +71,10 @@ target names; no chat, GUIDs, or item links.
 
 Hunter's Mark and Aspect maintenance are intentionally out of scope - those
 are a "set it and forget it, yourself" concern, not something a combat
-rotation advisor needs to weigh in on every global cooldown. This addon also
-does not attempt to model or avoid auto-shot "clipping" from instant shots -
-that interaction is not well-established enough to build a rule around
-without being able to test it live.
+rotation advisor needs to weigh in on every global cooldown.
 
-The rotation is based on TBC Marksmanship Hunter mechanics and has been
-validated with a deterministic self-check suite, since the author does not
-currently have a max-level Marksmanship Hunter. Player feedback from mid-level
-and level-70 content will drive the next updates.
+This rotation was checked against Wowhead, Icy Veins, and Warcraft Tavern's
+TBC Hunter guides, and validated with a 23-scenario deterministic
+self-check suite, since the author does not currently have a max-level
+Marksmanship Hunter. Player feedback from mid-level and level-70 content
+will drive the next updates.

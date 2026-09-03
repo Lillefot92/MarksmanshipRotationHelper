@@ -308,7 +308,7 @@ function ns.Diagnostics_GetReport()
         "",
         "Row types: E=anonymous event, A=ability use, S=state sample.",
         "State columns:",
-        "time S main mana hp% ttd enemies stingLeft gcd combat moving aoe reason",
+        "time S main mana hp% ttd enemies stingLeft combat moving aoe reason",
     }
 
     for _, entry in ipairs(runtime.entries) do

@@ -15,6 +15,8 @@ It shows an icon, an optional action-bar glow, and a settings panel.
 - `/mrh lock` / `/mrh unlock` - lock or drag the display
 - `/mrh sim [scenario]`, `/mrh sim next|stop|check` - run the deterministic
   self-check scenarios described below
+- `/mrh swing` / `/mrh wait` - toggle the Auto Shot swing bar and the
+  intentional-wait indicator
 - `/mrh record` / `/mrh record stop` - capture up to 60 seconds of live
   recommendations for review
 - `/mrh report` - open the copyable report window
@@ -24,28 +26,34 @@ It shows an icon, an optional action-bar glow, and a settings panel.
 
 ## Rotation design
 
-TBC Marksmanship mechanics this priority is built around:
+This priority was checked against Wowhead, Icy Veins, and Warcraft Tavern's
+TBC Hunter guides before being written, since the author has no max-level
+Hunter to test it on directly.
 
-- **Auto Shot needs no player action.** It fires on its own timer as long
-  as you are in range and facing the target. This addon deliberately does
-  not try to model or avoid "clipping" it - the exact interaction between
-  instant shots and the auto-shot timer is not something worth asserting
-  without being able to test it live, so the priority below is built only
-  on well-established mechanics.
-- **Serpent Sting is a real DoT** with a live-readable expiration, so
-  maintaining it works exactly like any duration-based debuff refresh:
-  the addon tracks the real `expirationTime` and refreshes a few seconds
-  early rather than waiting for it to fully lapse.
-- **Steady Shot and Aimed Shot have a cast time and require standing
-  still.** Arcane Shot and Multi-Shot are instant and usable while moving.
-  This addon skips the two cast-time shots entirely while you are moving,
-  rather than recommending something that would just fail to cast.
+- **Auto Shot fires on its own timer, just like a melee weapon swing.**
+  Steady Shot has a real cast time, so casting it carelessly delays
+  ("clips") the next Auto Shot and costs real damage - this is described
+  as the single most important Hunter DPS skill in TBC. This addon tracks
+  your Auto Shot timer and will only ever suggest Steady Shot when it can
+  finish before the next shot is due; otherwise it tells you to wait.
+- **Multi-Shot and Arcane Shot outrank Steady Shot** whenever they're off
+  cooldown, in both single-target and AoE alike - every guide checked
+  agrees Multi-Shot's per-cast damage beats Steady Shot's regardless of
+  target count.
+- **Aimed Shot is a pre-pull tool, not a filler.** Its cast time is too
+  long to weave in without badly disrupting the Auto Shot timing above, so
+  this addon only ever suggests it before combat starts.
+- **Serpent Sting is a safe instant, not a debuff to maintain.** It's only
+  suggested when it isn't already ticking on your target - not proactively
+  refreshed early like a maintained DoT.
+- **Steady Shot and Aimed Shot both require standing still.** Arcane Shot,
+  Multi-Shot, and Serpent Sting are instant and usable while moving. This
+  addon skips the two cast-time shots entirely while you're moving, rather
+  than recommending something that would just fail to cast.
 
-Single-target priority: maintain Serpent Sting (if missing, wrong, or about
-to lapse) -> Arcane Shot -> Aimed Shot -> Multi-Shot -> Steady Shot filler.
-
-AoE priority (3+ nearby enemies): maintain Serpent Sting -> Multi-Shot ->
-Arcane Shot -> Aimed Shot -> Steady Shot filler.
+Shot priority (same order in single-target and AoE): Multi-Shot -> Arcane
+Shot -> Steady Shot (if it won't clip the next Auto Shot) -> Serpent Sting
+(if it's not already active). Before the pull: Aimed Shot.
 
 **Hunter's Mark and Aspect of the Hawk are intentionally out of scope** -
 same reasoning as dropping Aura/Blessing maintenance from Retribution
@@ -95,11 +103,10 @@ Before shipping, this suite was also run **outside the game** against the
 exact `Rotation.lua`/`Simulator.lua` files in this folder, using a
 standalone Lua interpreter with the game API stubbed out - the same
 technique `/mrh sim check` uses in-game, and the same technique that
-caught real bugs before either the Warrior or Paladin addon was ever
-loaded into WoW. All scenarios passed on the first run this time, which
-is itself a signal that keeping the design tightly scoped (no swing-timer
-clipping logic, no buff-upkeep filler) pays off in correctness, not just
-simplicity.
+caught real bugs before the Warrior, Paladin, and an earlier draft of this
+Hunter addon were ever loaded into WoW. All 23 scenarios pass, covering
+the core shot priority, Auto Shot clip avoidance, movement, the pre-pull
+Aimed Shot window, and AoE mode.
 
 This is strong evidence the *priority logic* is internally consistent and
 matches the intended design - it cannot verify spell IDs, exact mana
