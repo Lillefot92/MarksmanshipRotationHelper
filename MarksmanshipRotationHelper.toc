@@ -1,0 +1,15 @@
+## Interface: 20506
+## Title: Marksmanship Rotation Helper
+## Notes: Shot-priority PvE rotation advisor for Marksmanship Hunters in TBC Anniversary.
+## Author: Lillefot92
+## Version: 1.0.0
+## IconTexture: Interface\Icons\Ability_Marksmanship
+## X-License: All Rights Reserved
+## SavedVariables: MarksmanshipRotationHelperDB
+
+Core.lua
+Rotation.lua
+Simulator.lua
+Diagnostics.lua
+Display.lua
+Settings.lua
